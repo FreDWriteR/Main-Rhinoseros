@@ -12,6 +12,9 @@ public class RhinocerosController : NetworkBehaviour
     [SyncVar(hook = nameof(SetConstraintsRotation))] //Синхронизация блокировки вращения игрока
     public RigidbodyConstraints RBC;
 
+    [SyncVar(hook = nameof(SetIsTriggerCollider))] //Синхронизация включения триггеров
+    public bool isTriggerCollider;
+
     [SyncVar(hook = nameof(Scoring))] //Синхронизация очков
     public int SyncCountPuncture = 0;
 
@@ -23,6 +26,9 @@ public class RhinocerosController : NetworkBehaviour
     
     [SyncVar(hook = nameof(SetRhinocerosNumber))] //Синхронизация номеров игроков
     public int RhinocerosNumber = 0;
+
+    [SyncVar(hook = nameof(SetisReadyJerk))]
+    public bool isReadyJerk = false; //Синхронизация индикатора состояния рывка
 
     //Скорости передвижения
     [Header("Movement")]
@@ -61,10 +67,12 @@ public class RhinocerosController : NetworkBehaviour
 
     Rigidbody rb;
 
-    bool isReadyJerk = false; //Для удержания рывка
-    bool isShowCursor = false; //Показать курсор
     
+    bool isShowCursor = false; //Показать курсор
+    bool isReadyJerkUse = false;
+
     public float HookMagnitude = 0f; //Перехват длины пути, пройденного в рывке
+    public bool HookisReadyJerk = false; //Перехват индикатора состояния рывка
     public bool isLockKey = false; //Блокировка камеры, когда показан курсор
     public bool isWait5Sec = false; //Ожидание перезапуска
 
@@ -100,17 +108,23 @@ public class RhinocerosController : NetworkBehaviour
     }
 
     //Команда для перевода игрока по которому попали в состояние невидимости
-    [Command]
-    public void CmdSetOffInvulnerability()
+    [Command(requiresAuthority = false)]
+    public void CmdSetOffInvulnerability(int ConnID)
     {
-        StartCoroutine(SetOffInvulnerability());
+        StartCoroutine(SetOffInvulnerability(ConnID));
     }
 
     //Команда для подсчета очков игрока
-    [Command]
+    [Command(requiresAuthority = false)]
     public void CmdScoreAPoint()
     {
         SyncCountPuncture++;
+    }
+
+    [Command]
+    public void CmdGetisReadyJerk()
+    {
+        isReadyJerk = isReadyJerkUse;
     }
 
     //Команда для присвоения имен игрокам и синхронизации имен
@@ -127,6 +141,13 @@ public class RhinocerosController : NetworkBehaviour
         RBC = RigidbodyConstraints.FreezeRotation;
     }
 
+    //Команда для синхронизации включения триггеров
+    [Command]
+    public void CmdSetTriggerCollider()
+    {
+        isTriggerCollider = !isTriggerCollider;
+    }
+
     //Команда для синхронизации длин рывка
     [Command]
     public void CmdGetRhinocerosMagJerk(Vector3 DirJerk)
@@ -135,7 +156,7 @@ public class RhinocerosController : NetworkBehaviour
     }
 
     //Команда для запуска RPC - перезапуск игры, сброс попаданий игроков и респаун.
-    [Command] 
+    [Command(requiresAuthority = false)] 
     public void CmdResetPlayer()
     {
         List<Vector3> startPositions = new List<Vector3>();
@@ -163,10 +184,20 @@ public class RhinocerosController : NetworkBehaviour
         HookMagnitude = NewDirMag;
     }
 
+    void SetisReadyJerk(bool OldReadyJerk, bool NewReadyJerk)
+    {
+        HookisReadyJerk = NewReadyJerk;
+    }
+
     //Хук для синхронизации блокировки вращения
     void SetConstraintsRotation(RigidbodyConstraints OldRBC, RigidbodyConstraints NewRBC)
     {
         gameObject.GetComponent<Rigidbody>().constraints = NewRBC;
+    }
+
+    void SetIsTriggerCollider(bool OldTriggerCollider, bool NewTriggerCollider)
+    {
+        gameObject.transform.Find("TriggerCollider").gameObject.GetComponent<CapsuleCollider>().isTrigger = NewTriggerCollider;
     }
 
     //Хук для подсчета очков игрока
@@ -204,10 +235,12 @@ public class RhinocerosController : NetworkBehaviour
     }
 
     //Подпрограмма для ввода в состояния неуязвимости и вывода из него
-    private IEnumerator SetOffInvulnerability()
+    private IEnumerator SetOffInvulnerability(int ConnID)
     {
         RhinocerosColor = Color.green;
-        RhinocerosInvulnerability = true;
+        RhinocerosInvulnerability = true; //хук синхронизации неуязвимости
+        //Чтобы неуязвимость жертвы успевала активироваться до присвоения очка игроку запускаем команду подсчета из команды активации неуязвимости после хука синхронизации неуязвимости
+        NetworkServer.connections.GetValueOrDefault(ConnID).identity.gameObject.GetComponent<RhinocerosController>().CmdScoreAPoint();
         yield return new WaitForSeconds(invulnerabilityTime);
         RhinocerosColor = Color.white;
         RhinocerosInvulnerability = false;
@@ -317,22 +350,9 @@ public class RhinocerosController : NetworkBehaviour
             PlayerView.transform.localEulerAngles = new Vector3(_rotationX, rotationY, 0);
             ViewPosition();
         }
-
         ///////////////////////
-
         coroutine = JerkOrMovePlayer();
         StartCoroutine(coroutine);
-        if (gameObject.transform.Find("TriggerCollider").GetComponent<SetInvulnerability>().isHit) 
-        {
-            gameObject.transform.Find("TriggerCollider").GetComponent<SetInvulnerability>().isHit = false;
-            rb.inertiaTensorRotation = Quaternion.identity;
-            CmdSetOffInvulnerability();
-        }
-        if (gameObject.transform.Find("TriggerCollider").GetComponent<SetInvulnerability>().isPoint)
-        {
-            gameObject.transform.Find("TriggerCollider").GetComponent<SetInvulnerability>().isPoint = false;
-            CmdScoreAPoint();
-        }
     }
 
     IEnumerator JerkOrMovePlayer() //Игрок может быть либо в состоянии рывка либо передвижения, пока он не закончит рывок он не сможет сменить направление.
@@ -343,12 +363,13 @@ public class RhinocerosController : NetworkBehaviour
             
             if (!moveDirection.Equals(Vector3.zero))
             {
+                CmdSetTriggerCollider();
                 isReadyJerk = true;
                 Vector3 DirectionJerk = Vector3.zero;
                 
                 float conclusiveJerkTime = jerkDistance / (jerkSpeed * 10);
                 float startTime = Time.time;
-                float currentTime = 0f;
+                float currentTime;
                 float currentDistance;
                 while (DirectionJerk.magnitude < jerkDistance)
                 {
@@ -366,6 +387,7 @@ public class RhinocerosController : NetworkBehaviour
                 DirectionJerk = Vector3.zero;
                 CmdGetRhinocerosMagJerk(DirectionJerk);
                 isReadyJerk = false;
+                CmdSetTriggerCollider();
             }
         }
         else if (!isReadyJerk)
